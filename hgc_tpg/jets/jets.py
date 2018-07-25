@@ -24,13 +24,95 @@ class BaseRun:
     def finalize(self):
         return self
 
+class VbfSelection(BaseRun):
+    def __init__(self,outer):
+        self.outer=outer
+        self.histos={}
+        self.histos["CutFlow"] = ROOT . TH1D("CutFlow","AllGen,match02,match01,matchboth",10,0,10)
+
+        self.histos["Mjj_gen"] = ROOT . TH1D("Mjj_gen","Mjj gen level",250,0,1000)
+        self.histos["Mjj_endcaps_gen"] = ROOT . TH1D("Mjj_endcaps_gen","Mjj gen level. ",250,0,1000)
+        self.histos["Mjj_reco"] = ROOT . TH1D("Mjj_reco","Mjj reco level",250,0,1000)
+
+        self.histos["axis1"] = ROOT . TH1D("axis1","-Log(axis1)",100,0,10.)
+        self.histos["axis2"] = ROOT . TH1D("axis2","-Log(axis2)",100,0,10.)
+        self.histos["mult"] = ROOT . TH1D("mult","mult",100,0,100)
+        self.histos["mult1GeV"] = ROOT . TH1D("mult1GeV","mult",100,0,100)
+        self.histos["ptD"] = ROOT . TH1D("ptD","ptD",100,0,1.)
+        self.histos["dR"] = ROOT . TH1D("dR","-Log(dR)",100,0,10.)
+
+    def run( self):
+        ## find VBF genjets
+        j1_gen,j2_gen,dijet_gen=None,None,None
+        mjj=0
+        dijet_gen_endcaps=None
+
+        for igen, gj1 in enumerate(self.outer.genjets_):
+            if gj1.Pt()<30: continue
+            isE1=abs(gj1.Eta()) > 3.0 or abs(gj1.Eta()) < 1.5 
+            for jgen, gj2 in enumerate(self.outer.genjets_):
+                if igen <= jgen: continue
+                if gj2.Pt()<30: continue
+                isE2=abs(gj2.Eta()) > 3.0 or abs(gj2.Eta()) < 1.5 
+                dijet_gen=ROOT.TLorentzVector(0,0,0,0,)
+                dijet_gen += gj1
+                dijet_gen += gj2
+                if dijet_gen.M() > mjj: 
+                    j1_gen=gj1
+                    j2_gen=gj2
+                    mjj=dijet_gen.M()
+                if isE1 and isE2 and ( dijet_gen_endcaps== None or dijet_gen.M() > dijet_gen_endcaps.M()):
+                    dijet_gen_endcaps=dijet_gen
+        ## 
+        self.histos["Mjj_gen"].Fill(mjj)
+        self.histos["Mjj_endcaps_gen"].Fill(dijet_gen_endcaps.M() if dijet_gen_endcaps != None else 0)
+        ## reco loop
+        j1_trg,j2_trg,dijet_trg=None,None,None
+        j1_idx,j2_idx = -1,-1
+        mjj=0
+        for ijet, j1 in enumerate(self.outer.jets_):
+            if j1.Pt()<30: continue
+            if abs(j1.Eta()) > 3.0 or abs(j1.Eta()) < 1.5 : continue
+            for jjet, j2 in enumerate(self.outer.genjets_):
+                if ijet <= jjet: continue
+                if j2.Pt()<30: continue
+                if abs(j2.Eta()) > 3.0 or abs(j2.Eta()) < 1.5 : continue
+                dijet_trg=ROOT.TLorentzVector(0,0,0,0,)
+                dijet_trg += j1
+                dijet_trg += j2
+                if dijet_trg.M() > mjj: 
+                    j1_trg=j1
+                    j2_trg=j2
+                    mjj=dijet_trg.M()
+                    j1_idx=ijet
+                    j2_idx=jjet
+        self.histos["Mjj_reco"].Fill(mjj)
+
+        if j1_trg != None and j2_trg!=None:
+            for idx in [j1_idx, j2_idx]:
+                ## fill properties
+                self.histos["axis1"]    . Fill(-math.log(self.outer.jetprop_[idx]["axis1"]) if self.outer.jetprop_[idx]["axis1"] >0 else 100)
+                self.histos["axis2"]    . Fill(-math.log(self.outer.jetprop_[idx]["axis2"]) if self.outer.jetprop_[idx]["axis2"] >0 else 100)
+                self.histos["mult"]     . Fill(self.outer.jetprop_[idx]["mult"])
+                self.histos["mult1GeV"] . Fill(self.outer.jetprop_[idx]["mult1GeV"])
+                self.histos["ptD"]      . Fill(self.outer.jetprop_[idx]["ptD"])
+                self.histos["dR"]       . Fill(self.outer.jetprop_[idx]["dR"])
+        ##
+        return self
+
+    def finalize(self):
+        for h_str in self.histos  :
+            h=self.histos[h_str]
+            h.Write()
+        return self
+
 class EnergyProfile(BaseRun):
     def __init__(self,outer):
         self.outer=outer
         self.histos={}
         self.dR=0.4
 
-        self.histos["EnergyProfile"] = ROOT . TH2D("EnergyProfile","EnergyProfile;E0.2/E0.1;ETrue/E0.2",1000,0,10,1000,0,10)
+        self.histos["EnergyProfile"] = ROOT . TH2D("EnergyProfile","EnergyProfile;E0.1/E0.2;E0.2/ETrue",1000,0,10,1000,0,10)
         self.histos["CutFlow"] = ROOT . TH1D("CutFlow","AllGen,match02,match01,matchboth",10,0,10)
 
     def run(self):
@@ -67,7 +149,8 @@ class EnergyProfile(BaseRun):
             if match2: self.histos["CutFlow"].Fill(2)
             if match1 and match2:
                 self.histos["CutFlow"].Fill(3)
-                self.histos["EnergyProfile"].Fill(ET/E02,E02/E01)
+                #self.histos["EnergyProfile"].Fill(ET/E02,E01/E02)
+                self.histos["EnergyProfile"].Fill(E01/E02,E02/ET)
 
 
         return self
@@ -351,22 +434,32 @@ class jet_clustering:
         self.extraRadius=conf.cluster["extraRadius"]
         self.clusterR = conf.cluster["dR"]
 
-
         if self.doCalibration:
+            print "============= USING CALIBRATION SEQUENCE ===========:"
             self.printCalib=0
+            self.calibration=conf.calibration['type']
+
             if conf.calibration['type']=='inversion':
-                self.calibration='inversion'
                 self.const=conf.calibration["constants"][:]
                 self.cut = conf.calibration["cut"][:]
-                self.pteta = conf.calibration["pt-eta"]
-                if self.pteta !="":
-                    self.calibf = ROOT.TF1("myfunc",self.pteta,0,10000)
-                else:
-                    self.calibf = None
                 print "<*> Using inversion method for calibration:"
                 print "    coeff:" + ','.join(["%.3f"%x for x in self.const])
                 print "     cuts:" + ','.join(["%.3f"%x for x in self.cut])
+
+            self.pu = conf.calibration["pu"]
+            if self.pu !="":
+                fname,pname = self.pu.split(":")[0], self.pu.split(":")[1]
+                self.fPU = ROOT.TFile.Open(fname)
+                self.pPU = self.fPU.Get(pname)
+                print "<*> Using pu corrections:",fname,pname
+
+            self.pteta = conf.calibration["pt-eta"]
+            if self.pteta !="":
+                self.calibf = ROOT.TF1("myfunc",self.pteta,0,10000)
+                print "<*> Using pt-eta method for calibration:"
                 print "   pt-eta:" + self.pteta
+            else:
+                self.calibf = None
 
         ## Collections of TLorentzVector
         self.jets_ = []
@@ -377,6 +470,7 @@ class jet_clustering:
 
     def clear(self):
         self.jets_=[]
+        self.jetprop_=[] # jetprop_[0]["xxx"] #radius, axis1, axis2, ptD, mult
         self.genjets_=[]
         self.jetsR_ = {}
 
@@ -402,7 +496,63 @@ class jet_clustering:
             p.SetPtEtaPhiM(  jet.pt, jet.eta, jet.phi, jet.mass)
             self.jets_ .append(p) 
 
-        for dR in self.extraRadius:
+            ## compute properties
+            sum_weight = 0.
+            sum_pt = 0.
+            sum_deta = 0.
+            sum_dphi = 0.
+            sum_deta2 = 0.
+            sum_detadphi = 0.
+            sum_dphi2 = 0.
+            sum_dr2 = 0.
+            sum_dr  = 0.
+            mult=0
+            mult1GeV=0
+            for c in jet.constituents():
+                mult += 1
+                if c.pt > 1: mult1GeV+=1
+                weight= c.pt * c.pt
+                deta=c.eta -jet.eta
+                dphi=f.deltaPhi(c.phi,jet.phi)
+                sum_weight += weight;
+                sum_pt += c.pt;
+                sum_deta += deta*weight;
+                sum_dphi += dphi*weight;
+                sum_deta2 += deta*deta*weight;
+                sum_detadphi += deta*dphi*weight;
+                sum_dphi2 += dphi*dphi*weight;
+                sum_dr2 += (deta*deta + dphi*dphi)*weight
+                sum_dr += math.sqrt(deta*deta + dphi*dphi)*weight
+            #Calculate axis2 and ptD
+            a,b,c = 0.,0.,0.
+            ave_deta, ave_dphi,ave_deta2,ave_dphi2  = 0., 0.,  0.,  0.
+            ave_dr2 = 0.
+            if sum_weight > 0:
+                ave_deta = sum_deta/sum_weight;
+                ave_dphi = sum_dphi/sum_weight;
+                ave_deta2 = sum_deta2/sum_weight;
+                ave_dphi2 = sum_dphi2/sum_weight;
+                ave_dr2 = sum_dr2/sum_weight
+                ave_dr = sum_dr/sum_weight
+                a = ave_deta2 - ave_deta*ave_deta;                          
+                b = ave_dphi2 - ave_dphi*ave_dphi;                          
+                c = -(sum_detadphi/sum_weight - ave_deta*ave_dphi);                
+            delta = math.sqrt(abs((a-b)*(a-b)+4*c*c));
+            axis2 = math.sqrt(0.5*(a+b-delta)) if a+b-delta > 0 else 0.
+            axis1 = math.sqrt(0.5*(a+b+delta)) if a+b+delta > 0 else 0.
+            ptD   = math.sqrt(sum_weight)/sum_pt if sum_weight > 0 else 0. 
+            radius= math.sqrt(ave_dr2 - ave_dr*ave_dr) if ave_dr2 - ave_dr*ave_dr>0 else 0.
+            self.jetprop_.append({
+                     "ptD":ptD,
+                     "axis1":axis1,
+                     "axis2":axis2,
+                     "mult":mult,
+                     "mult1GeV":mult1GeV,
+                     "dR": radius, #-> axis1^2 + axis2^2
+                    })
+
+        ## HARD CODED -> To Be matched
+        for dR in [0.2]:
             self.jetsR_[dR]=[]
             sequence=cluster( ip, algo="antikt",ep=False,R=dR)
             jets = sequence.inclusive_jets()
@@ -411,6 +561,22 @@ class jet_clustering:
                 p.SetPtEtaPhiM(  jet.pt, jet.eta, jet.phi, jet.mass)
                 self.jetsR_[dR] .append(p) 
 
+        for dR in [0.1]:
+            self.jetsR_[dR]=[]
+            for j in self.jetsR_[0.2]:
+                #compute a E01 jets
+                #ptV,etaV,phiV,energyV
+                j01 = ROOT.TLorentzVector()
+                if j.Pt()<15:  
+                    ## fast exit for jets that are useless
+                    self.jetsR_[dR].append(j01)
+                    continue
+                for k in range(0,len(ptV)):
+                    p =ROOT.TLorentzVector()
+                    p.SetPtEtaPhiE(ptV[k],etaV[k],phiV[k],energyV[k])
+                    if p.DeltaR(j)<dR:
+                        j01 += p
+                self.jetsR_[dR].append(j01)
         return self
 
     def do_genjets(self,ptV,etaV,phiV,energyV):
@@ -488,9 +654,11 @@ class jet_clustering:
 
                 if self.printCalib< 10:
                     print " -----------------2D---------------------------"
+
                 for icl in range(0,len(self.cl_pt_)):
                     layer=self.cl_layer_[icl]
-                    raw=max(self.cl_pt_[icl]-self.cut[layer-1],0.)
+                    raw = max(self.cl_pt_[icl]-self.cut[layer-1],0.) if self.calibration =='inversion' else self.cl_pt_[icl]
+
                     #self.cl_raw_.append(self.cl_energy_[icl])
                     self.cl_raw_.append(raw)
                     if self.printCalib< 10:
@@ -539,6 +707,18 @@ class jet_clustering:
                 for dR in self.jetsR_:
                     print "JETS R = ",dR,len(self.jetsR_[dR])
                 print "---------------------------------"
+
+            if self.doCalibration and self.pu != "":
+                if self.printCalib< 10: print "--------- PU CALIBRATION ----------"
+                for ijet, jet in enumerate(self.jets_):
+                    eta= abs(jet.Eta())
+                    pt = jet.Pt()
+                    b = self.pPU.FindBin(eta)
+                    pu = self.pPU.GetBinContent(b)
+                    corr =  max( (pt - pu) / pt,0.)
+                    jet *= corr
+                    if self.printCalib< 10: 
+                        print ijet,"JetPt",pt,"pu",pu, "->",jet.Pt()
 
             if self.doCalibration and self.calibf != None:
                 if self.printCalib< 10: print "--------- JET CALIBRATION ----------"
